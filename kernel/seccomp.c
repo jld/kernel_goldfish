@@ -13,7 +13,7 @@
  *        of Berkeley Packet Filters/Linux Socket Filters.
  */
 
-#include <linux/atomic.h>
+#include <asm/atomic.h>
 #include <linux/audit.h>
 #include <linux/seccomp.h>
 #include <linux/sched.h>
@@ -125,6 +125,7 @@ u32 seccomp_bpf_load(int off)
  */
 static int seccomp_check_filter(struct sock_filter *filter, unsigned int flen)
 {
+#if 0
 	int pc;
 	for (pc = 0; pc < flen; pc++) {
 		struct sock_filter *ftest = &filter[pc];
@@ -188,6 +189,7 @@ static int seccomp_check_filter(struct sock_filter *filter, unsigned int flen)
 			return -EINVAL;
 		}
 	}
+#endif
 	return 0;
 }
 
@@ -211,7 +213,7 @@ static u32 seccomp_run_filters(int syscall)
 	 * value always takes priority (ignoring the DATA).
 	 */
 	for (f = current->seccomp.filter; f; f = f->prev) {
-		u32 cur_ret = sk_run_filter(NULL, f->insns);
+		u32 cur_ret = sk_run_filter(NULL, f->insns, f->len);
 		if ((cur_ret & SECCOMP_RET_ACTION) < (ret & SECCOMP_RET_ACTION))
 			ret = cur_ret;
 	}
@@ -246,8 +248,7 @@ static long seccomp_attach_filter(struct sock_fprog *fprog)
 	 * behavior of privileged children.
 	 */
 	if (!current->no_new_privs &&
-			security_real_capable_noaudit(current,
-				current_user_ns(), CAP_SYS_ADMIN) != 0)
+			security_real_capable_noaudit(current, CAP_SYS_ADMIN) != 0)
 		return -EACCES;
 
 	/* Allocate a new seccomp_filter */
