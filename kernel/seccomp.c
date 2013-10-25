@@ -26,6 +26,7 @@
 #include <linux/ptrace.h>
 #include <linux/security.h>
 #include <linux/slab.h>
+#include <linux/skbuff.h>
 #include <linux/tracehook.h>
 #include <linux/uaccess.h>
 #include <asm/syscall.h>
@@ -199,21 +200,45 @@ static int seccomp_check_filter(struct sock_filter *filter, unsigned int flen)
  *
  * Returns valid seccomp BPF response codes.
  */
-static u32 seccomp_run_filters(int syscall)
+static u32 seccomp_run_filters(struct pt_regs *regs)
 {
 	struct seccomp_filter *f;
 	u32 ret = SECCOMP_RET_ALLOW;
+	struct arch_seccomp_data {
+		int32_t nr;
+		uint32_t arch;
+		uint64_t instruction_pointer;
+		uint64_t args[6];
+	} fake_packet;
+	struct sk_buff fake_skb;
+	int i;
+	unsigned long real_args[6];
 
 	/* Ensure unexpected behavior doesn't result in failing open. */
 	if (WARN_ON(current->seccomp.filter == NULL))
 		return SECCOMP_RET_KILL;
+
+	/* Fake up a packet for older sk_run_filter.  This is horrble. */
+	fake_packet.nr = syscall_get_nr(current, regs);
+	fake_packet.arch = syscall_get_arch(current, regs);
+	fake_packet.instruction_pointer = KSTK_EIP(current);
+	syscall_get_arguments(current, regs, 0, 6, real_args);
+	for (i = 0; i < 6; ++i)
+		fake_packet.args[i] = real_args[i];
+	memset(&fake_skb, 0, sizeof(fake_skb));
+	fake_skb.data = (unsigned char *)&fake_packet;
+	fake_skb.len = sizeof(fake_packet);
+	for (i = 0; i < fake_skb.len / 4; ++i) {
+		__u32 *p = (__u32 *)fake_skb.data + i;
+		*p = cpu_to_be32(*p);
+	}
 
 	/*
 	 * All filters in the list are evaluated and the lowest BPF return
 	 * value always takes priority (ignoring the DATA).
 	 */
 	for (f = current->seccomp.filter; f; f = f->prev) {
-		u32 cur_ret = sk_run_filter(NULL, f->insns, f->len);
+		u32 cur_ret = sk_run_filter(&fake_skb, f->insns, f->len);
 		if ((cur_ret & SECCOMP_RET_ACTION) < (ret & SECCOMP_RET_ACTION))
 			ret = cur_ret;
 	}
@@ -405,7 +430,7 @@ int __secure_computing_int(int this_syscall)
 	case SECCOMP_MODE_FILTER: {
 		int data;
 		struct pt_regs *regs = task_pt_regs(current);
-		ret = seccomp_run_filters(this_syscall);
+		ret = seccomp_run_filters(regs);
 		data = ret & SECCOMP_RET_DATA;
 		ret &= SECCOMP_RET_ACTION;
 		switch (ret) {
