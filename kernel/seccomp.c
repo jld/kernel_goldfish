@@ -204,11 +204,15 @@ static u32 seccomp_run_filters(struct pt_regs *regs)
 {
 	struct seccomp_filter *f;
 	u32 ret = SECCOMP_RET_ALLOW;
-	struct arch_seccomp_data {
-		int32_t nr;
-		uint32_t arch;
-		uint64_t instruction_pointer;
-		uint64_t args[6];
+	union seccomp_fake_packet {
+		struct arch_seccomp_data {
+			int32_t nr;
+			uint32_t arch;
+			uint64_t instruction_pointer;
+			uint64_t args[6];
+		} data;
+		unsigned char bytes[sizeof(struct arch_seccomp_data)];
+		__u32 words[sizeof(struct arch_seccomp_data) / 4];
 	} fake_packet;
 	struct sk_buff fake_skb;
 	int i;
@@ -218,20 +222,22 @@ static u32 seccomp_run_filters(struct pt_regs *regs)
 	if (WARN_ON(current->seccomp.filter == NULL))
 		return SECCOMP_RET_KILL;
 
-	/* Fake up a packet for older sk_run_filter.  This is horrble. */
-	fake_packet.nr = syscall_get_nr(current, regs);
-	fake_packet.arch = syscall_get_arch(current, regs);
-	fake_packet.instruction_pointer = KSTK_EIP(current);
+	/*
+	 * Fake up a packet for sk_run_filter, because this kernel
+	 * version doesn't have the code the original seccomp-bpf
+	 * patch used to divert the load opcodes.
+	 */
+	fake_packet.data.nr = syscall_get_nr(current, regs);
+	fake_packet.data.arch = syscall_get_arch(current, regs);
+	fake_packet.data.instruction_pointer = KSTK_EIP(current);
 	syscall_get_arguments(current, regs, 0, 6, real_args);
 	for (i = 0; i < 6; ++i)
-		fake_packet.args[i] = real_args[i];
+		fake_packet.data.args[i] = real_args[i];
 	memset(&fake_skb, 0, sizeof(fake_skb));
-	fake_skb.data = (unsigned char *)&fake_packet;
-	fake_skb.len = sizeof(fake_packet);
-	for (i = 0; i < fake_skb.len / 4; ++i) {
-		__u32 *p = (__u32 *)fake_skb.data + i;
-		*p = cpu_to_be32(*p);
-	}
+	fake_skb.data = fake_packet.bytes;
+	fake_skb.len = sizeof(fake_packet.bytes);
+	for (i = 0; i < sizeof(fake_packet.words) / 4; ++i)
+		fake_packet.words[i] = cpu_to_be32(fake_packet.words[i]);
 
 	/*
 	 * All filters in the list are evaluated and the lowest BPF return
