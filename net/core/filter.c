@@ -36,6 +36,7 @@
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
 #include <linux/filter.h>
+#include <linux/seccomp.h>
 
 /* No hurry in this branch */
 static void *__load_pointer(struct sk_buff *skb, int k)
