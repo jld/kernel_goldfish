@@ -80,120 +80,6 @@ static inline u32 get_u32(u64 data, int index)
 	return ((u32 *)&data)[index];
 }
 
-/* Helper for bpf_load below. */
-#define BPF_DATA(_name) offsetof(struct seccomp_data, _name)
-/**
- * bpf_load: checks and returns a pointer to the requested offset
- * @off: offset into struct seccomp_data to load from
- *
- * Returns the requested 32-bits of data.
- * seccomp_check_filter() should assure that @off is 32-bit aligned
- * and not out of bounds.  Failure to do so is a BUG.
- */
-u32 seccomp_bpf_load(int off)
-{
-	struct pt_regs *regs = task_pt_regs(current);
-	if (off == BPF_DATA(nr))
-		return syscall_get_nr(current, regs);
-	if (off == BPF_DATA(arch))
-		return syscall_get_arch(current, regs);
-	if (off >= BPF_DATA(args[0]) && off < BPF_DATA(args[6])) {
-		unsigned long value;
-		int arg = (off - BPF_DATA(args[0])) / sizeof(u64);
-		int index = !!(off % sizeof(u64));
-		syscall_get_arguments(current, regs, arg, 1, &value);
-		return get_u32(value, index);
-	}
-	if (off == BPF_DATA(instruction_pointer))
-		return get_u32(KSTK_EIP(current), 0);
-	if (off == BPF_DATA(instruction_pointer) + sizeof(u32))
-		return get_u32(KSTK_EIP(current), 1);
-	/* seccomp_check_filter should make this impossible. */
-	BUG();
-}
-
-/**
- *	seccomp_check_filter - verify seccomp filter code
- *	@filter: filter to verify
- *	@flen: length of filter
- *
- * Takes a previously checked filter (by sk_chk_filter) and
- * redirects all filter code that loads struct sk_buff data
- * and related data through seccomp_bpf_load.  It also
- * enforces length and alignment checking of those loads.
- *
- * Returns 0 if the rule set is legal or -EINVAL if not.
- */
-static int seccomp_check_filter(struct sock_filter *filter, unsigned int flen)
-{
-#if 0
-	int pc;
-	for (pc = 0; pc < flen; pc++) {
-		struct sock_filter *ftest = &filter[pc];
-		u16 code = ftest->code;
-		u32 k = ftest->k;
-
-		switch (code) {
-		case BPF_S_LD_W_ABS:
-			ftest->code = BPF_S_ANC_SECCOMP_LD_W;
-			/* 32-bit aligned and not out of bounds. */
-			if (k >= sizeof(struct seccomp_data) || k & 3)
-				return -EINVAL;
-			continue;
-		case BPF_S_LD_W_LEN:
-			ftest->code = BPF_S_LD_IMM;
-			ftest->k = sizeof(struct seccomp_data);
-			continue;
-		case BPF_S_LDX_W_LEN:
-			ftest->code = BPF_S_LDX_IMM;
-			ftest->k = sizeof(struct seccomp_data);
-			continue;
-		/* Explicitly include allowed calls. */
-		case BPF_S_RET_K:
-		case BPF_S_RET_A:
-		case BPF_S_ALU_ADD_K:
-		case BPF_S_ALU_ADD_X:
-		case BPF_S_ALU_SUB_K:
-		case BPF_S_ALU_SUB_X:
-		case BPF_S_ALU_MUL_K:
-		case BPF_S_ALU_MUL_X:
-		case BPF_S_ALU_DIV_X:
-		case BPF_S_ALU_AND_K:
-		case BPF_S_ALU_AND_X:
-		case BPF_S_ALU_OR_K:
-		case BPF_S_ALU_OR_X:
-		case BPF_S_ALU_LSH_K:
-		case BPF_S_ALU_LSH_X:
-		case BPF_S_ALU_RSH_K:
-		case BPF_S_ALU_RSH_X:
-		case BPF_S_ALU_NEG:
-		case BPF_S_LD_IMM:
-		case BPF_S_LDX_IMM:
-		case BPF_S_MISC_TAX:
-		case BPF_S_MISC_TXA:
-		case BPF_S_ALU_DIV_K:
-		case BPF_S_LD_MEM:
-		case BPF_S_LDX_MEM:
-		case BPF_S_ST:
-		case BPF_S_STX:
-		case BPF_S_JMP_JA:
-		case BPF_S_JMP_JEQ_K:
-		case BPF_S_JMP_JEQ_X:
-		case BPF_S_JMP_JGE_K:
-		case BPF_S_JMP_JGE_X:
-		case BPF_S_JMP_JGT_K:
-		case BPF_S_JMP_JGT_X:
-		case BPF_S_JMP_JSET_K:
-		case BPF_S_JMP_JSET_X:
-			continue;
-		default:
-			return -EINVAL;
-		}
-	}
-#endif
-	return 0;
-}
-
 /**
  * seccomp_run_filters - evaluates all seccomp filters against @syscall
  * @syscall: number of the current system call
@@ -297,11 +183,6 @@ static long seccomp_attach_filter(struct sock_fprog *fprog)
 
 	/* Check and rewrite the fprog via the skb checker */
 	ret = sk_chk_filter(filter->insns, filter->len);
-	if (ret)
-		goto fail;
-
-	/* Check and rewrite the fprog for seccomp use */
-	ret = seccomp_check_filter(filter->insns, filter->len);
 	if (ret)
 		goto fail;
 

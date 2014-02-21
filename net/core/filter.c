@@ -339,13 +339,6 @@ load_b:
 				A = 0;
 			continue;
 		}
-#if 0
-#ifdef CONFIG_SECCOMP_FILTER
-		case BPF_S_ANC_SECCOMP_LD_W:
-			A = seccomp_bpf_load(fentry->k);
-			continue;
-#endif
-#endif
 		default:
 			return 0;
 		}
